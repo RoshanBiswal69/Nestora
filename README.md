@@ -3,6 +3,21 @@
 A modern, full-stack community management platform designed for residential societies, condominium associations, and apartment complexes. Nestora streamlines maintenance operations, automates SLA overdue tracking, facilitates real-time resident broadcasting, and provides comprehensive administration analytics.
 
 ---
+# 🌐 Live Demo
+
+**Nestora — Smart Community Management Platform**
+
+🚀 **Live Application:** https://nestora-1-r401.onrender.com
+
+> Experience the fully deployed Nestora application and explore its community management features, resident services, maintenance workflows, notifications, and administration dashboard.
+
+**🔗 [Open Nestora Live Demo](https://nestora-1-r401.onrender.com)**
+
+### Deployment
+
+The application is deployed on **Render** and is accessible through the live URL above.
+
+> **Note:** The application may take a few moments to respond if the Render service has been idle.
 
 ## Key Highlights
 
