@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="nestora-grad" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#4F46E5" />
+      <stop offset="100%" stop-color="#06B6D4" />
+    </linearGradient>
+    <linearGradient id="nestora-accent" x1="16" y1="16" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#818CF8" />
+    </linearGradient>
+  </defs>
+  <!-- Background rounded squircle -->
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="url(#nestora-grad)" />
+  <!-- Nested Modern Architecture Geometry (House + Network Nodes) -->
+  <path d="M24 11L12 21V35C12 36.1046 12.8954 37 14 37H34C35.1046 37 36 36.1046 36 35V21L24 11Z" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.95" />
+  <!-- Central Hub / Connection -->
+  <path d="M20 37V26C20 24.8954 20.8954 24 22 24H26C27.1046 24 28 24.8954 28 26V37" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="white" fill-opacity="0.15" />
+  <!-- Smart Dot / Accent -->
+  <circle cx="24" cy="18" r="2.5" fill="#38BDF8" />
+</svg>
