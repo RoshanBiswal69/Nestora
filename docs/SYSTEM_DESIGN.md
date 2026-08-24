@@ -1,46 +1,270 @@
-# System Design Write-up
+# Nestora — System Design
 
-## Complaint History Model
+## 1. System Overview
 
-Every complaint embeds a `statusHistory` array directly inside its document rather than living in a separate `history` collection. Each entry captures `status`, `changedBy` (a reference to the acting user), an optional `note`, and a `timestamp`. At creation time, a complaint is seeded with one history entry — `Open`, "Complaint raised" — so a complaint's full lifecycle is always reconstructable from a single document with zero joins. This embedded-array approach was chosen over a normalized `ComplaintHistory` collection for three reasons: complaints have a bounded, small number of status transitions (at most three: Open → In Progress → Resolved, since Resolved is terminal), the history is always read together with the complaint and never queried independently, and MongoDB's document model rewards data that's read together being stored together. The trade-off is that the array can't be efficiently queried in isolation (e.g. "find all history entries by admin X across all complaints") — but that query isn't part of the product's requirements, so the simplicity wins.
+**Nestora** is a full-stack Smart Community Management Platform for residential societies and apartment communities. It provides two primary roles:
 
-Status transitions are enforced server-side, not client-side: the PATCH endpoint checks `complaint.status === 'Resolved'` and rejects further updates with a 400, which is what gives the "once Resolved, it's closed" rule teeth. Every PATCH that actually changes the status pushes a new history entry before saving, using `req.user._id` as `changedBy` so the audit trail is tied to an authenticated, server-verified actor rather than anything the client could spoof.
+* **Resident:** Registers/logs in, submits complaints, uploads evidence, tracks complaint status/history, and views community notices.
+* **Administrator:** Manages complaints, updates status and priority, monitors SLA violations, publishes notices, and views analytics.
 
-## Overdue Detection
+The system follows a **layered client-server architecture**:
 
-Overdue status is a derived boolean (`isOverdue`) stored on the complaint, recalculated lazily rather than via a background cron job. A `updateOverdueComplaints()` utility runs at the start of every read path that an admin would use to triage complaints (the admin complaint list and the dashboard) — never on resident reads, since residents don't need this side effect and it would be wasted work. The function does two bulk updates: any complaint still `Open` or `In Progress` whose `createdAt` is older than `now - thresholdDays` gets flagged true, and any complaint that's since become `Resolved` gets flagged false (covering the case where a complaint was overdue, then resolved, and shouldn't keep showing as overdue in stale data).
+```text
+Users
+ ├── Resident
+ └── Administrator
+        │
+        ▼
+React 18 Frontend
+ ├── Authentication
+ ├── Resident Dashboard
+ ├── Admin Dashboard
+ ├── Complaints
+ ├── Notices
+ └── Settings
+        │
+        │ REST / JSON
+        ▼
+Node.js + Express Backend
+ ├── Auth API
+ ├── Complaint API
+ ├── Notice API
+ ├── Dashboard API
+ ├── JWT Authentication
+ └── Role-Based Access Control
+        │
+        ├───────────────┐
+        ▼               ▼
+MongoDB + Mongoose   External Services
+ ├── Users           ├── Cloudinary
+ ├── Complaints      │   └── Complaint Photos
+ ├── Notices         └── Nodemailer + SMTP
+ └── Settings            └── Email Notifications
+```
 
-The threshold itself lives in a generic `Settings` collection as a `{key, value}` pair (`overdueThresholdDays`) rather than a hardcoded constant or environment variable, so an admin can change it at runtime through the Settings page without a redeploy. Sort order on the admin complaint list is `{isOverdue: -1, priority: -1, createdAt: -1}`, which is what makes overdue items "surface at the top" as required — it's a query-level guarantee, not something the frontend has to reimplement.
+## 2. Frontend Architecture
 
-This trades a small amount of staleness (an admin's view could be up to one page-load behind the true overdue state) for avoiding a scheduled job in a project scoped to free-tier deployment. At scale, the natural evolution is a cron-triggered call to the same utility function.
+The presentation layer uses **React 18** and **React Router v6**. It manages navigation, authentication state, API communication, forms, dashboards, complaints, notices, and role-specific interfaces.
 
-## Photo Handling
+Major modules include:
 
-Photos are handled with Multer paired with multer-storage-cloudinary, which 
-uploads files directly to Cloudinary instead of local disk. Each upload is 
-placed under the folder `nestora/complaints` in Cloudinary, with 
-a transformation applied (max 1600×1600, crop limit) to keep storage and 
-bandwidth reasonable without degrading visible quality. Only common image 
-MIME types are accepted, and size is capped at 5MB — both enforced in the 
-Multer config before the file is transferred.
+* Landing
+* Login/Register
+* Resident Dashboard
+* Admin Dashboard
+* Complaints
+* Notices
+* Settings
+* AuthContext
+* Shared UI components
 
-Cloudinary returns a permanent, publicly accessible URL for each uploaded 
-file. That URL — not a filename, not a relative path — is what gets persisted 
-on the complaint document in MongoDB (`complaint.photo`). The frontend renders 
-it directly as an `<img src={complaint.photo} />` with no URL reconstruction 
-needed.
+The frontend communicates with the backend through REST APIs.
 
-This approach sidesteps the main deployment concern with disk-based uploads: 
-Render's free-tier filesystem is ephemeral and resets on every redeploy, which 
-would silently break any previously uploaded photo while its database reference 
-survived. With Cloudinary, the file lives in object storage completely 
-independent of the backend server's lifecycle — a full redeploy or server 
-restart has no effect on previously uploaded images.
+## 3. Authentication and Authorization
 
-The upgrade path from here (if needed at scale) is switching to a private 
-Cloudinary delivery URL with signed access tokens, without touching any route 
-logic since routes only ever handle `complaint.photo` as an opaque string.
+Nestora uses **JWT authentication** and **bcryptjs password hashing**.
 
-## Notification Flow
+During registration, the backend validates the user, checks whether the email already exists, hashes the password, and stores the user in MongoDB. During login, credentials are verified and a JWT is generated.
 
-Email is handled by Nodemailer against any SMTP provider (documented for Gmail with an App Password, since that's a reliable free-tier option). Notifications fire from exactly two trigger points: the complaint PATCH route, after a successful status change, and the notice POST route, when `isImportant` is true. Both are fire-and-forget — wrapped in try/catch inside the email utility itself so that a transient SMTP failure never blocks or rolls back the underlying database write that triggered it. This was a deliberate choice: a resident's complaint update should never fail because an email provider is down. If `EMAIL_USER` isn't configured in the environment, the email functions short-circuit silently, so the app is fully functional in environments where email isn't set up yet (e.g. early local development).
+```text
+User
+ ↓
+React Login/Register
+ ↓
+Express Auth API
+ ↓
+bcryptjs / JWT
+ ↓
+MongoDB
+ ↓
+Authenticated Session
+```
+
+Authentication endpoints include:
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/auth/me
+```
+
+JWT middleware protects APIs, while RBAC separates **resident** and **admin** permissions.
+
+## 4. Complaint Management
+
+Complaints are the core functionality of Nestora. Residents submit a title, description, category, priority, and optional photo.
+
+Supported categories include plumbing, electrical, elevator, security, cleaning, parking, noise, internet, and other.
+
+The complaint lifecycle is:
+
+```text
+Open → In Progress → Resolved
+```
+
+Complaint photos are processed using **Multer**, uploaded to **Cloudinary**, and the resulting URL is stored in MongoDB.
+
+```text
+Resident
+ ↓
+Complaint Form
+ ↓
+Express API
+ ├── Text Data → MongoDB
+ └── Photo → Multer → Cloudinary
+                    ↓
+                 Image URL
+                    ↓
+                 MongoDB
+```
+
+Each complaint maintains an embedded `statusHistory` containing status, note, and timestamp, creating an audit trail.
+
+## 5. SLA and Overdue Management
+
+Nestora includes configurable SLA tracking. The system compares a complaint's age against the configured SLA threshold.
+
+```text
+Complaint Created
+ ↓
+Calculate Age
+ ↓
+Compare with SLA Threshold
+ ├── Within SLA → Normal
+ └── Exceeded → isOverdue = true
+                     ↓
+                Admin Triage
+```
+
+Administrators can retrieve and update the overdue threshold through dedicated API endpoints.
+
+## 6. Notice and Notification System
+
+Administrators can publish community notices. Important notices can trigger email broadcasting.
+
+```text
+Admin
+ ↓
+Create Notice
+ ↓
+POST /api/notices
+ ↓
+MongoDB
+ ↓
+Important Notice
+ ↓
+Nodemailer
+ ↓
+SMTP Server
+ ↓
+Residents
+```
+
+Nodemailer uses SMTP configuration such as `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, and `EMAIL_PASS`.
+
+## 7. Database Design
+
+Nestora uses **MongoDB with Mongoose**.
+
+### Users
+
+```text
+_id
+name
+email
+password
+role
+apartmentNumber
+phone
+```
+
+### Complaints
+
+```text
+_id
+title
+description
+category
+status
+priority
+photo
+resident
+statusHistory[]
+isOverdue
+resolvedAt
+```
+
+### Notices
+
+```text
+_id
+title
+content
+isImportant
+postedBy
+```
+
+### Settings
+
+```text
+_id
+key
+value
+```
+
+A resident can create multiple complaints, while administrators can publish notices. Complaint status history is embedded within the complaint document.
+
+## 8. API Architecture
+
+The main REST API groups are:
+
+```text
+Authentication
+POST  /api/auth/register
+POST  /api/auth/login
+GET   /api/auth/me
+
+Complaints
+POST  /api/complaints
+GET   /api/complaints/my
+GET   /api/complaints
+GET   /api/complaints/:id
+PATCH /api/complaints/:id
+
+Notices
+GET    /api/notices
+POST   /api/notices
+DELETE /api/notices/:id
+
+Dashboard
+GET /api/dashboard
+```
+
+Requests pass through JWT authentication and role validation before reaching the appropriate route and business logic.
+
+## 9. Security and Deployment
+
+Security is provided through bcryptjs password hashing, JWT-based authentication, RBAC, protected APIs, and environment variables for sensitive configuration such as database credentials, JWT secrets, Cloudinary secrets, and email passwords.
+
+The project supports **Docker and Docker Compose** and is deployed using **Render**. The deployment architecture consists of the React/Nginx frontend, Node/Express backend, MongoDB, Cloudinary, and SMTP services.
+
+## 10. Technology Stack
+
+| Technology   | Purpose             |
+| ------------ | ------------------- |
+| React 18     | Frontend            |
+| React Router | Navigation          |
+| Node.js      | Backend runtime     |
+| Express      | REST API            |
+| MongoDB      | Database            |
+| Mongoose     | ODM                 |
+| JWT          | Authentication      |
+| bcryptjs     | Password hashing    |
+| Multer       | File uploads        |
+| Cloudinary   | Image storage       |
+| Nodemailer   | Email notifications |
+| Docker       | Containerization    |
+| Render       | Deployment          |
+
+**Overall flow:**
+**Users → React UI → Express REST API → JWT/RBAC → Business Logic → MongoDB**, with **Cloudinary** handling complaint media, **Nodemailer/SMTP** handling notifications, and **Docker/Render** supporting deployment.
