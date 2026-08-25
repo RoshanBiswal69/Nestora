@@ -1,4 +1,4 @@
-# Nestora — Smart Community Management Platform
+# Nestora — Smart Society Maintenance Platform
 
 A modern, full-stack community management platform designed for residential societies, condominium associations, and apartment complexes. Nestora streamlines maintenance operations, automates SLA overdue tracking, facilitates real-time resident broadcasting, and provides comprehensive administration analytics.
 
